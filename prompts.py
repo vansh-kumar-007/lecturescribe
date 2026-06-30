@@ -73,7 +73,14 @@ Here is the full lecture transcript. Transform it into structured notes.
 TRANSCRIPT:
 {transcript}
 
-Output ONLY valid JSON. No markdown fences. No explanation. Start with {{ and end with }}.
+CRITICAL REMINDER — YOUR RESPONSE FORMAT:
+- Output ONLY a valid JSON object
+- The root object MUST have these exact keys: "subject", "lecture_title", "topics_covered", "estimated_read_time_minutes", "blocks"
+- The "blocks" key MUST be an array of block objects
+- Each block MUST have: "type", "content", "diagram_type", "diagram_description", "diagram_mermaid"
+- The "type" field MUST be one of EXACTLY these values: "heading", "subheading", "body", "important", "critical", "diagram", "note"
+- ANY other type value ("concept", "code_example", "section", etc.) is INVALID and must not appear
+- No markdown fences. No explanation. Start with {{ and end with }}.
 """
 
 def build_prompt(transcript: str) -> tuple[str, str]:
