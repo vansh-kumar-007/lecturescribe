@@ -156,3 +156,82 @@ def chunk_transcript(transcript: str, max_words: int = 3000) -> list[str]:
         chunks.append(' '.join(current_words))
 
     return chunks
+
+
+import re
+
+def parse_srt(srt_path: str) -> str:
+    """
+    Parse a .srt subtitle file and return clean transcript text.
+    Strips timestamps, sequence numbers, and HTML tags.
+    """
+    with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+
+    # Remove sequence numbers (lines that are just digits)
+    content = re.sub(r"^\d+\s*$", "", content, flags=re.MULTILINE)
+
+    # Remove timestamp lines
+    content = re.sub(r"\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}", "", content)
+
+    # Remove HTML tags (e.g. <i>, <b>)
+    content = re.sub(r"<[^>]+>", "", content)
+
+    # Collapse whitespace and blank lines
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    return " ".join(lines)
+
+
+def find_srt_for_video(video_path: str) -> str | None:
+    """
+    Given a video file path, look for a matching _en.srt or same-name .srt file.
+    Returns the SRT path if found, else None.
+    """
+    base = os.path.splitext(video_path)[0]
+    candidates = [
+        base + "_en.srt",
+        base + ".srt",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def get_folder_transcript(folder_path: str, use_srt: bool = True) -> tuple[str, str]:
+    """
+    Given a folder, find all video files in sorted order.
+    For each, use SRT if use_srt=True and SRT exists, else Whisper.
+    Returns (combined_transcript, folder_title).
+    """
+    from transcriber import transcribe as whisper_transcribe
+
+    folder = Path(folder_path)
+    video_exts = {".mp4", ".mkv", ".avi", ".mov", ".webm"}
+    video_files = sorted([f for f in folder.iterdir()
+                          if f.suffix.lower() in video_exts])
+
+    if not video_files:
+        print(f"[ERROR] No video files found in: {folder_path}")
+        exit(1)
+
+    print(f"  Found {len(video_files)} video(s) in folder.")
+    parts = []
+
+    for vf in video_files:
+        if use_srt:
+            srt_path = find_srt_for_video(str(vf))
+            if srt_path:
+                print(f"  [SRT]    {vf.name}")
+                text = parse_srt(srt_path)
+            else:
+                print(f"  [Whisper] {vf.name} (no SRT found)")
+                audio = extract_audio(str(vf))
+                text = whisper_transcribe(audio)
+        else:
+            print(f"  [Whisper] {vf.name}")
+            audio = extract_audio(str(vf))
+            text = whisper_transcribe(audio)
+        parts.append(text)
+
+    return " ".join(parts), folder.name
