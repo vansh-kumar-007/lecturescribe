@@ -14,6 +14,7 @@ import re
 import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
+from subtitle_parser import load_subtitle, find_subtitle_for_video, can_parse
 
 load_dotenv()
 
@@ -160,31 +161,13 @@ def chunk_transcript(transcript: str, max_words: int = 3000) -> list[str]:
 # ── Subtitle parsing ───────────────────────────────────────────────────────────
 
 def parse_srt(srt_path: str) -> str:
-    """
-    Parse a .srt subtitle file and return clean transcript text.
-    Strips timestamps, sequence numbers, and HTML tags.
-    """
-    with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
-
-    content = re.sub(r"^\d+\s*$", "", content, flags=re.MULTILINE)
-    content = re.sub(r"\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}", "", content)
-    content = re.sub(r"<[^>]+>", "", content)
-
-    lines = [line.strip() for line in content.splitlines() if line.strip()]
-    return " ".join(lines)
+    """Backward-compatible wrapper. Use load_subtitle() for new code."""
+    return load_subtitle(srt_path)
 
 
 def find_srt_for_video(video_path: str) -> str | None:
-    """
-    Given a video file path, look for a matching _en.srt or same-name .srt.
-    Returns the SRT path if found, else None.
-    """
-    base = os.path.splitext(video_path)[0]
-    for candidate in [base + "_en.srt", base + ".srt"]:
-        if os.path.exists(candidate):
-            return candidate
-    return None
+    """Backward-compatible wrapper. Use find_subtitle_for_video() for new code."""
+    return find_subtitle_for_video(video_path)
 
 
 # ── Folder processing ──────────────────────────────────────────────────────────
@@ -214,12 +197,14 @@ def get_folder_transcript(folder_path: str, use_srt: bool = True, job=None) -> t
         stem = vf.stem
 
         if use_srt:
-            srt_path = find_srt_for_video(str(vf))
-            if srt_path:
-                print(f"  [SRT]     {vf.name}")
-                text = parse_srt(srt_path)
+            sub_path = find_subtitle_for_video(str(vf))
+            if sub_path:
+                ext = Path(sub_path).suffix.lower()
+                print(f"  [{ext[1:].upper()}]     {vf.name}")
+                text = load_subtitle(sub_path)
             else:
-                print(f"  [Whisper] {vf.name} (no SRT found)")
+                print(f"  [Whisper] {vf.name} (no subtitle found)")
+                
                 if job:
                     audio = extract_audio(str(vf), job=job)
                     out_wav = str(job.audio_dir / f"{stem}.wav")

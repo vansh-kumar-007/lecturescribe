@@ -19,6 +19,8 @@ from rich.text import Text
 from rich.table import Table
 from rich import box
 
+from subtitle_parser import find_subtitle_for_video, can_parse
+
 console = Console()
 
 # ── Custom style ───────────────────────────────────────────────────────────────
@@ -125,7 +127,14 @@ def show_file_preview(folder: str, use_srt: bool):
     for i, vf in enumerate(video_files, 1):
         if use_srt:
             srt = _find_srt(vf)
-            source = f"[green]SRT[/green]: {Path(srt).name}" if srt else "[yellow]Whisper (no SRT)[/yellow]"
+            if srt:
+                ext = Path(srt).suffix.upper()[1:]
+                source = f"[green]{ext}[/green]: {Path(srt).name}"
+            else:
+                source = "[yellow]Whisper (no subtitle)[/yellow]"
+
+
+
         else:
             source = "[cyan]Whisper GPU[/cyan]"
         table.add_row(str(i), vf.name, source)
@@ -136,11 +145,8 @@ def show_file_preview(folder: str, use_srt: bool):
 
 
 def _find_srt(video_path: Path) -> str | None:
-    base = str(video_path.with_suffix(""))
-    for candidate in [base + "_en.srt", base + ".srt"]:
-        if os.path.exists(candidate):
-            return candidate
-    return None
+    """Wrapper around subtitle_parser for backward compat."""
+    return find_subtitle_for_video(str(video_path))
 
 
 # ── Source type selection ──────────────────────────────────────────────────────
