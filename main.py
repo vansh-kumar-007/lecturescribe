@@ -23,6 +23,7 @@ from nemotron import analyze_transcript
 from diagram_renderer import render_diagrams
 from pdf_renderer import render_pdf
 from workspace_manager import create_job
+from transcriber import transcribe, transcribe_segmented
 
 console = Console()
 
@@ -79,7 +80,7 @@ def main():
                 title_hint = folder_title
         else:
             audio_path = extract_audio(config["input"], job=job)
-            transcript = transcribe(audio_path)
+            transcript = transcribe_segmented(audio_path, job=job)
             # Save merged transcript
             with open(job.merged_transcript, "w", encoding="utf-8") as f:
                 f.write(transcript)
