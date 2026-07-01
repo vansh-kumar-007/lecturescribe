@@ -12,6 +12,28 @@ import tempfile
 from pathlib import Path
 
 
+def _sanitize_mermaid(code: str) -> str:
+    """
+    Clean up Mermaid code to prevent parse errors:
+    - Wrap node labels containing special chars in double quotes
+    - Remove or escape parentheses inside node labels
+    """
+    import re
+
+    # Replace content inside [] node labels: escape special chars
+    def clean_label(m):
+        label = m.group(1)
+        # Remove parentheses and their content (e.g. input(...) -> input)
+        label = re.sub(r'\([^)]*\)', '', label)
+        # Remove backticks, quotes, colons
+        label = re.sub(r'[`"\':]', '', label)
+        # Collapse whitespace
+        label = re.sub(r'\s+', ' ', label).strip()
+        return f'["{label}"]'
+
+    code = re.sub(r'\[([^\]]+)\]', clean_label, code)
+    return code
+
 def render_diagrams(blocks: list[dict], output_dir: str, lecture_title: str) -> dict[int, str]:
     """
     Find all diagram blocks and render them to PNG files.
@@ -50,6 +72,14 @@ def _render_mermaid(mermaid_code: str, output_png: str) -> bool:
     Write Mermaid code to a temp file and call mmdc to render it as PNG.
     Returns True on success, False on failure.
     """
+    mermaid_code = _sanitize_mermaid(mermaid_code)
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".mmd", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write(mermaid_code)
+        tmp_path = tmp.name
+    
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".mmd", delete=False, encoding="utf-8"

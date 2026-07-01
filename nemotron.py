@@ -75,34 +75,49 @@ def parse_json_response(raw: str, attempt: int = 1) -> dict:
 def process_chunk(client: OpenAI, chunk_text: str, chunk_index: int) -> dict:
     """
     Send one transcript chunk to Nemotron and return parsed JSON.
-    Retries once with explicit JSON reminder if parsing fails.
+    Retries up to 3 times with exponential backoff on rate limit errors.
     """
+    import time
+
     system_prompt, user_prompt = build_prompt(chunk_text)
+    max_retries = 3
 
-    print(f"    Sending chunk {chunk_index + 1} to Nemotron...")
-    raw = call_nemotron(client, system_prompt, user_prompt)
+    for attempt in range(max_retries):
+        try:
+            print(f"    Sending chunk {chunk_index + 1} to Nemotron...")
+            raw = call_nemotron(client, system_prompt, user_prompt)
 
-    try:
-        return parse_json_response(raw, attempt=1)
-    except ValueError as e:
-        if str(e).startswith("JSON_PARSE_FAILED:"):
-            print(f"    [WARN] Chunk {chunk_index + 1} returned invalid JSON. Retrying...")
-            # Append explicit reminder and retry
-            retry_prompt = user_prompt + (
-                "\n\nYour previous response was not valid JSON. "
-                "Return ONLY the JSON object, nothing else. Start with { and end with }."
-            )
-            raw2 = call_nemotron(client, system_prompt, retry_prompt)
             try:
-                return parse_json_response(raw2, attempt=2)
-            except ValueError:
-                # Save debug output and exit
-                debug_path = "outputs/debug_raw.txt"
-                with open(debug_path, "w", encoding="utf-8") as f:
-                    f.write(raw2)
-                print(f"[ERROR] Nemotron returned invalid JSON after retry. Raw response saved to {debug_path}")
-                exit(1)
-        raise
+                return parse_json_response(raw, attempt=1)
+            except ValueError as e:
+                if str(e).startswith("JSON_PARSE_FAILED:"):
+                    print(f"    [WARN] Chunk {chunk_index + 1} returned invalid JSON. Retrying...")
+                    retry_prompt = user_prompt + (
+                        "\n\nYour previous response was not valid JSON. "
+                        "Return ONLY the JSON object, nothing else. Start with { and end with }."
+                    )
+                    raw2 = call_nemotron(client, system_prompt, retry_prompt)
+                    try:
+                        return parse_json_response(raw2, attempt=2)
+                    except ValueError:
+                        debug_path = "outputs/debug_raw.txt"
+                        with open(debug_path, "w", encoding="utf-8") as f:
+                            f.write(raw2)
+                        print(f"[ERROR] Invalid JSON after retry. Raw saved to {debug_path}")
+                        exit(1)
+                raise
+
+        except Exception as e:
+            err_str = str(e)
+            if "ResourceExhausted" in err_str or "rate" in err_str.lower() or "limit" in err_str.lower():
+                wait = 60 * (attempt + 1)  # 60s, 120s, 180s
+                print(f"    [WARN] Rate limit hit on chunk {chunk_index + 1}. Waiting {wait}s before retry {attempt + 1}/{max_retries}...")
+                time.sleep(wait)
+                continue
+            raise
+
+    print(f"[ERROR] Chunk {chunk_index + 1} failed after {max_retries} retries.")
+    exit(1)
 
 
 def merge_chunks(results: list[dict]) -> dict:
@@ -166,8 +181,9 @@ def _post_process_blocks(blocks: list[dict]) -> list[dict]:
 def analyze_transcript(transcript: str) -> dict:
     """
     Full pipeline: chunk transcript → call Nemotron per chunk → merge results.
-    Returns the final merged structured notes dict.
     """
+    import time
+
     client = get_client()
     chunks = chunk_transcript(transcript)
     print(f"  Transcript split into {len(chunks)} chunk(s).")
@@ -176,5 +192,9 @@ def analyze_transcript(transcript: str) -> dict:
     for i, chunk in enumerate(chunks):
         result = process_chunk(client, chunk, i)
         results.append(result)
+        # Pause between chunks to avoid rate limits
+        if i < len(chunks) - 1:
+            print(f"    Pausing 15s before next chunk...")
+            time.sleep(15)
 
     return merge_chunks(results)
