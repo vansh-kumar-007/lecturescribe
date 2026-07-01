@@ -3,6 +3,7 @@ diagram_renderer.py
 -------------------
 Renders Mermaid.js diagram definitions into PNG images.
 Uses the Mermaid CLI (mmdc) via subprocess.
+If a Job is provided, saves PNGs to job.diagram_dir and skips already-rendered ones.
 Falls back to a placeholder if rendering fails — pipeline never stops for a bad diagram.
 """
 
@@ -16,32 +17,32 @@ def _sanitize_mermaid(code: str) -> str:
     """
     Clean up Mermaid code to prevent parse errors:
     - Wrap node labels containing special chars in double quotes
-    - Remove or escape parentheses inside node labels
+    - Remove parentheses inside node labels
     """
     import re
 
-    # Replace content inside [] node labels: escape special chars
     def clean_label(m):
         label = m.group(1)
-        # Remove parentheses and their content (e.g. input(...) -> input)
         label = re.sub(r'\([^)]*\)', '', label)
-        # Remove backticks, quotes, colons
         label = re.sub(r'[`"\':]', '', label)
-        # Collapse whitespace
         label = re.sub(r'\s+', ' ', label).strip()
         return f'["{label}"]'
 
     code = re.sub(r'\[([^\]]+)\]', clean_label, code)
     return code
 
-def render_diagrams(blocks: list[dict], output_dir: str, lecture_title: str) -> dict[int, str]:
+
+def render_diagrams(blocks: list[dict], output_dir: str = None, lecture_title: str = "", job=None) -> dict[int, str]:
     """
     Find all diagram blocks and render them to PNG files.
+    If a Job is provided, saves to job.diagram_dir and skips already-rendered PNGs.
     Returns a mapping of block index -> PNG file path.
-    Blocks that fail to render are skipped (placeholder shown in PDF instead).
     """
-    diagrams_dir = os.path.join(output_dir, "diagrams")
-    os.makedirs(diagrams_dir, exist_ok=True)
+    if job is not None:
+        diagrams_dir = job.diagram_dir
+    else:
+        diagrams_dir = Path(output_dir) / "diagrams"
+        diagrams_dir.mkdir(parents=True, exist_ok=True)
 
     index_to_path = {}
 
@@ -53,14 +54,23 @@ def render_diagrams(blocks: list[dict], output_dir: str, lecture_title: str) -> 
         if not mermaid_code:
             continue
 
-        safe_title = _sanitize(lecture_title)[:30]
-        output_png = os.path.join(diagrams_dir, f"{safe_title}_diagram_{i}.png")
+        if job:
+            output_png = job.diagram_path(i, block.get("diagram_type", ""))
+        else:
+            safe_title = _sanitize(lecture_title)[:30]
+            output_png = diagrams_dir / f"{safe_title}_diagram_{i}.png"
+
+        # Resume: skip already-rendered diagrams
+        if output_png.exists():
+            print(f"    Diagram {i} already rendered. Skipping.")
+            index_to_path[i] = str(output_png)
+            continue
 
         print(f"    Rendering diagram {i} ({block.get('diagram_type', 'unknown')})...")
-        success = _render_mermaid(mermaid_code, output_png)
+        success = _render_mermaid(mermaid_code, str(output_png))
 
         if success:
-            index_to_path[i] = output_png
+            index_to_path[i] = str(output_png)
         else:
             print(f"    [WARN] Diagram {i} failed to render. Placeholder will be used.")
 
@@ -74,19 +84,13 @@ def _render_mermaid(mermaid_code: str, output_png: str) -> bool:
     """
     mermaid_code = _sanitize_mermaid(mermaid_code)
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".mmd", delete=False, encoding="utf-8"
-    ) as tmp:
-        tmp.write(mermaid_code)
-        tmp_path = tmp.name
-    
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".mmd", delete=False, encoding="utf-8"
         ) as tmp:
             tmp.write(mermaid_code)
             tmp_path = tmp.name
-        # Use full path to mmdc on Windows (installed as .ps1 via npm)
+
         mmdc_cmd = r"C:\Users\vanshkumar\AppData\Roaming\npm\mmdc.ps1"
 
         result = subprocess.run([

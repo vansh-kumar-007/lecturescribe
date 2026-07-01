@@ -285,21 +285,25 @@ def _build_content(blocks: list, diagram_paths: dict, styles: dict, font: str, p
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
-def render_pdf(notes: dict, diagram_paths: dict, output_dir: str = "outputs") -> str:
+def render_pdf(notes: dict, diagram_paths: dict, output_dir: str = "outputs", job=None) -> str:
     """
     Render the full PDF from structured notes and diagram PNGs.
+    If a Job is provided, saves to job.pdf_dir.
     Returns the path to the saved PDF file.
     """
-    os.makedirs(output_dir, exist_ok=True)
+    if job is not None:
+        out_dir = job.pdf_dir
+    else:
+        out_dir = output_dir
+        os.makedirs(out_dir, exist_ok=True)
 
     font = _register_fonts()
     styles = _build_styles(font)
 
-    # Output filename
     safe_title = re.sub(r"[^\w\s-]", "", notes.get("lecture_title", "Notes"))
     safe_title = re.sub(r"\s+", "_", safe_title.strip())[:50]
     date_str = datetime.now().strftime("%Y-%m-%d")
-    output_path = os.path.join(output_dir, f"{safe_title}_{date_str}.pdf")
+    output_path = os.path.join(str(out_dir), f"{safe_title}_{date_str}.pdf")
 
     # Page dimensions with margins
     left_margin   = 25 * mm

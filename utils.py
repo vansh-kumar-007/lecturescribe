@@ -3,10 +3,14 @@ utils.py
 --------
 Shared utilities for LectureScribe:
 - Environment variable loading
-- Audio extraction from local MP4 or YouTube URL (output: 16kHz mono WAV)
+- Audio extraction from local video or YouTube URL
+- SRT/subtitle parsing
+- Transcript chunking
+- Folder processing
 """
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
@@ -23,29 +27,33 @@ def get_env(key: str) -> str:
     return value
 
 
-def extract_audio(input_path: str, output_dir: str = "outputs") -> str:
+# ── Audio extraction ───────────────────────────────────────────────────────────
+
+def extract_audio(input_path: str, job=None, output_dir: str = "outputs") -> str:
     """
     Extract audio from a local video file or YouTube URL.
+    If a Job is provided, saves to job.audio_dir/audio.wav.
     Returns the path to a 16kHz mono WAV file.
     """
-    os.makedirs(output_dir, exist_ok=True)
-    output_wav = str(Path(output_dir) / "audio.wav")
+    if job is not None:
+        out_wav = str(job.audio_dir / "audio.wav")
+    else:
+        os.makedirs(output_dir, exist_ok=True)
+        out_wav = str(Path(output_dir) / "audio.wav")
 
     is_url = input_path.startswith("http")
-
     if is_url:
-        _extract_from_youtube(input_path, output_wav)
+        _extract_from_youtube(input_path, out_wav)
     else:
-        _extract_from_local(input_path, output_wav)
+        _extract_from_local(input_path, out_wav)
 
-    return output_wav
+    return out_wav
 
 
 def _extract_from_youtube(url: str, output_wav: str) -> None:
     """Download audio from YouTube using yt-dlp and convert to 16kHz mono WAV."""
     temp_audio = output_wav.replace(".wav", ".%(ext)s")
 
-    # Check yt-dlp is available
     result = subprocess.run(["yt-dlp", "--version"], capture_output=True)
     if result.returncode != 0:
         print("[ERROR] yt-dlp not found. Run: pip install yt-dlp")
@@ -53,8 +61,7 @@ def _extract_from_youtube(url: str, output_wav: str) -> None:
 
     print("  Downloading audio from YouTube...")
     dl_result = subprocess.run([
-        "yt-dlp",
-        "-x",                          # extract audio only
+        "yt-dlp", "-x",
         "--audio-format", "wav",
         "--audio-quality", "0",
         "-o", temp_audio,
@@ -65,17 +72,15 @@ def _extract_from_youtube(url: str, output_wav: str) -> None:
         print(f"[ERROR] Could not download video: {dl_result.stderr.strip()}")
         exit(1)
 
-    # yt-dlp may output a different filename — find it
-    candidate = output_wav.replace(".wav", ".wav")
+    candidate = output_wav
     if not os.path.exists(candidate):
-        # Search outputs folder for any wav
-        wavs = list(Path("outputs").glob("*.wav"))
+        out_dir = str(Path(output_wav).parent)
+        wavs = list(Path(out_dir).glob("*.wav"))
         if not wavs:
-            print("[ERROR] yt-dlp finished but no WAV file found in outputs/")
+            print("[ERROR] yt-dlp finished but no WAV file found.")
             exit(1)
         candidate = str(wavs[0])
 
-    # Resample to 16kHz mono
     _resample_wav(candidate, output_wav)
 
 
@@ -85,20 +90,16 @@ def _extract_from_local(input_path: str, output_wav: str) -> None:
         print(f"[ERROR] File not found: {input_path}")
         exit(1)
 
-    # Check ffmpeg is available
     result = subprocess.run(["ffmpeg", "-version"], capture_output=True)
     if result.returncode != 0:
-        print("[ERROR] ffmpeg not found. Install it from https://ffmpeg.org/download.html and add to PATH.")
+        print("[ERROR] ffmpeg not found. Install from https://ffmpeg.org and add to PATH.")
         exit(1)
 
     print("  Extracting audio from local file...")
     ff_result = subprocess.run([
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-vn",                  # no video
-        "-acodec", "pcm_s16le", # 16-bit PCM
-        "-ar", "16000",         # 16kHz sample rate
-        "-ac", "1",             # mono
+        "ffmpeg", "-y", "-i", input_path,
+        "-vn", "-acodec", "pcm_s16le",
+        "-ar", "16000", "-ac", "1",
         output_wav
     ], capture_output=True, text=True)
 
@@ -110,7 +111,6 @@ def _extract_from_local(input_path: str, output_wav: str) -> None:
 def _resample_wav(input_wav: str, output_wav: str) -> None:
     """Resample any WAV to 16kHz mono using ffmpeg."""
     if input_wav == output_wav:
-        # In-place resample: write to temp then rename
         temp = output_wav + ".tmp.wav"
         subprocess.run([
             "ffmpeg", "-y", "-i", input_wav,
@@ -122,10 +122,12 @@ def _resample_wav(input_wav: str, output_wav: str) -> None:
             "ffmpeg", "-y", "-i", input_wav,
             "-ar", "16000", "-ac", "1", output_wav
         ], capture_output=True)
-        if input_wav != output_wav and os.path.exists(input_wav):
+        if os.path.exists(input_wav) and input_wav != output_wav:
             os.remove(input_wav)
-            
-            
+
+
+# ── Transcript chunking ────────────────────────────────────────────────────────
+
 def chunk_transcript(transcript: str, max_words: int = 3000) -> list[str]:
     """
     Split a long transcript into chunks of max_words words.
@@ -142,12 +144,9 @@ def chunk_transcript(transcript: str, max_words: int = 3000) -> list[str]:
     for word in words:
         current_words.append(word)
 
-        # Split at sentence boundary near the limit
         if len(current_words) >= max_words and word.endswith(('.', '?', '!')):
             chunks.append(' '.join(current_words))
             current_words = []
-
-        # Hard cap: force split if we're 20% over max_words with no boundary found
         elif len(current_words) >= int(max_words * 1.2):
             chunks.append(' '.join(current_words))
             current_words = []
@@ -158,7 +157,7 @@ def chunk_transcript(transcript: str, max_words: int = 3000) -> list[str]:
     return chunks
 
 
-import re
+# ── Subtitle parsing ───────────────────────────────────────────────────────────
 
 def parse_srt(srt_path: str) -> str:
     """
@@ -168,40 +167,33 @@ def parse_srt(srt_path: str) -> str:
     with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
         content = f.read()
 
-    # Remove sequence numbers (lines that are just digits)
     content = re.sub(r"^\d+\s*$", "", content, flags=re.MULTILINE)
-
-    # Remove timestamp lines
     content = re.sub(r"\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}", "", content)
-
-    # Remove HTML tags (e.g. <i>, <b>)
     content = re.sub(r"<[^>]+>", "", content)
 
-    # Collapse whitespace and blank lines
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     return " ".join(lines)
 
 
 def find_srt_for_video(video_path: str) -> str | None:
     """
-    Given a video file path, look for a matching _en.srt or same-name .srt file.
+    Given a video file path, look for a matching _en.srt or same-name .srt.
     Returns the SRT path if found, else None.
     """
     base = os.path.splitext(video_path)[0]
-    candidates = [
-        base + "_en.srt",
-        base + ".srt",
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
+    for candidate in [base + "_en.srt", base + ".srt"]:
+        if os.path.exists(candidate):
+            return candidate
     return None
 
 
-def get_folder_transcript(folder_path: str, use_srt: bool = True) -> tuple[str, str]:
+# ── Folder processing ──────────────────────────────────────────────────────────
+
+def get_folder_transcript(folder_path: str, use_srt: bool = True, job=None) -> tuple[str, str]:
     """
     Given a folder, find all video files in sorted order.
-    For each, use SRT if use_srt=True and SRT exists, else Whisper.
+    For each video: use SRT if available and use_srt=True, else Whisper.
+    If a Job is provided, saves individual transcripts to job.trans_dir.
     Returns (combined_transcript, folder_title).
     """
     from transcriber import transcribe as whisper_transcribe
@@ -219,19 +211,48 @@ def get_folder_transcript(folder_path: str, use_srt: bool = True) -> tuple[str, 
     parts = []
 
     for vf in video_files:
+        stem = vf.stem
+
         if use_srt:
             srt_path = find_srt_for_video(str(vf))
             if srt_path:
-                print(f"  [SRT]    {vf.name}")
+                print(f"  [SRT]     {vf.name}")
                 text = parse_srt(srt_path)
             else:
                 print(f"  [Whisper] {vf.name} (no SRT found)")
-                audio = extract_audio(str(vf))
+                if job:
+                    audio = extract_audio(str(vf), job=job)
+                    out_wav = str(job.audio_dir / f"{stem}.wav")
+                    # rename generic audio.wav to per-lecture name
+                    if os.path.exists(audio) and audio != out_wav:
+                        os.replace(audio, out_wav)
+                    audio = out_wav
+                else:
+                    audio = extract_audio(str(vf))
                 text = whisper_transcribe(audio)
         else:
             print(f"  [Whisper] {vf.name}")
-            audio = extract_audio(str(vf))
+            if job:
+                out_wav = str(job.audio_dir / f"{stem}.wav")
+                _extract_from_local(str(vf), out_wav)
+                audio = out_wav
+            else:
+                audio = extract_audio(str(vf))
             text = whisper_transcribe(audio)
+
+        # Save per-lecture transcript to job workspace
+        if job:
+            trans_file = job.transcript_path(stem)
+            with open(trans_file, "w", encoding="utf-8") as f:
+                f.write(text)
+
         parts.append(text)
 
-    return " ".join(parts), folder.name
+    combined = " ".join(parts)
+
+    # Save merged transcript
+    if job:
+        with open(job.merged_transcript, "w", encoding="utf-8") as f:
+            f.write(combined)
+
+    return combined, folder.name

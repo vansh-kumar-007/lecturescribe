@@ -2,14 +2,14 @@
 main.py
 -------
 LectureScribe entry point.
-Launches TUI for source selection, then runs the full pipeline.
+Launches TUI for source selection, creates a Job workspace,
+then runs the full pipeline writing all outputs to the job folder.
 """
 
 import sys
 import os
 import time
 import json
-from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -22,6 +22,7 @@ from transcriber import transcribe
 from nemotron import analyze_transcript
 from diagram_renderer import render_diagrams
 from pdf_renderer import render_pdf
+from workspace_manager import create_job
 
 console = Console()
 
@@ -43,73 +44,100 @@ def step(num: int, total: int, emoji: str, label: str):
     return done, fail
 
 
-def _save_transcript(transcript: str):
-    os.makedirs("outputs", exist_ok=True)
-    with open("outputs/transcript.txt", "w", encoding="utf-8") as f:
-        f.write(transcript)
-
-
 def main():
     # ── TUI: get config ────────────────────────────────────────────────────────
     config = select_source()
 
+    # ── Create job workspace ───────────────────────────────────────────────────
+    title_hint = config.get("title_override") or Path(config["input"]).name
+    job = create_job(
+        source=config["input"],
+        source_type=config["mode"],
+        title=title_hint,
+        config=config
+    )
+
+    logger = job.get_logger()
+    logger.info(f"Job created: {job.dir}")
+
     console.print()
     console.rule("[cyan]Starting Pipeline[/cyan]")
+    console.print(f"[dim]Workspace: {job.dir}[/dim]")
     console.print()
 
     # ── Step 1: Get transcript ─────────────────────────────────────────────────
     done, fail = step(1, 4, "📝", "Getting transcript")
+    job.mark_step("transcription")
     try:
         if config["mode"] == "folder":
             transcript, folder_title = get_folder_transcript(
                 config["input"],
-                use_srt=config["use_srt"]
+                use_srt=config["use_srt"],
+                job=job
             )
-            title_hint = config["title_override"] or folder_title
+            if not config.get("title_override"):
+                title_hint = folder_title
         else:
-            # URL mode: extract audio then transcribe
-            audio_path = extract_audio(config["input"])
+            audio_path = extract_audio(config["input"], job=job)
             transcript = transcribe(audio_path)
-            title_hint = config["title_override"] or "Lecture"
+            # Save merged transcript
+            with open(job.merged_transcript, "w", encoding="utf-8") as f:
+                f.write(transcript)
 
-        _save_transcript(transcript)
         done(f"~{len(transcript.split())} words")
+        logger.info(f"Transcript ready: {len(transcript.split())} words")
     except Exception as e:
+        job.mark_failed(str(e))
+        logger.error(f"Transcription failed: {e}")
         fail(str(e))
 
     # ── Step 2: Nemotron analysis ──────────────────────────────────────────────
     done, fail = step(2, 4, "🧠", "Analyzing with Nemotron")
+    job.mark_step("nemotron")
     try:
-        notes = analyze_transcript(transcript)
-        if config["title_override"]:
+        notes = analyze_transcript(transcript, job=job)
+        if config.get("title_override"):
             notes["lecture_title"] = config["title_override"]
-        with open("outputs/notes.json", "w", encoding="utf-8") as f:
-            json.dump(notes, f, indent=2)
         done(f"{len(notes.get('blocks', []))} blocks")
+        logger.info(f"Nemotron done: {len(notes.get('blocks', []))} blocks")
     except Exception as e:
+        job.mark_failed(str(e))
+        logger.error(f"Nemotron failed: {e}")
         fail(str(e))
 
     # ── Step 3: Diagram rendering ──────────────────────────────────────────────
     done, fail = step(3, 4, "📊", "Rendering diagrams")
+    job.mark_step("diagrams")
     try:
         diagram_paths = render_diagrams(
-            notes["blocks"], "outputs", notes.get("lecture_title", "lecture")
+            notes["blocks"],
+            job=job,
+            lecture_title=notes.get("lecture_title", "lecture")
         )
         done(f"{len(diagram_paths)} diagram(s)")
+        logger.info(f"Diagrams rendered: {len(diagram_paths)}")
     except Exception as e:
+        job.mark_failed(str(e))
+        logger.error(f"Diagram rendering failed: {e}")
         fail(str(e))
 
     # ── Step 4: PDF generation ─────────────────────────────────────────────────
     done, fail = step(4, 4, "📄", "Generating PDF")
+    job.mark_step("pdf")
     try:
-        pdf_path = render_pdf(notes, diagram_paths, "outputs")
+        pdf_path = render_pdf(notes, diagram_paths, job=job)
         done()
+        logger.info(f"PDF saved: {pdf_path}")
     except Exception as e:
+        job.mark_failed(str(e))
+        logger.error(f"PDF generation failed: {e}")
         fail(str(e))
 
     # ── Done ───────────────────────────────────────────────────────────────────
+    job.mark_done()
     console.print()
     console.print(f"[bold yellow]✨ Notes saved to:[/bold yellow] {pdf_path}")
+    console.print(f"[dim]Full workspace: {job.dir}[/dim]")
     os.startfile(os.path.abspath(pdf_path))
 
 
